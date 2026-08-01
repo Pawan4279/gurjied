@@ -6,11 +6,21 @@ const subjects = ['K–12 Learning', 'NEET', 'JEE Advanced', 'SSC', 'Current Aff
 
 function App() {
   const [showPassword, setShowPassword] = useState(false)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [message, setMessage] = useState('')
+  const [loginStatus, setLoginStatus] = useState<'idle' | 'success' | 'error'>('idle')
 
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setMessage('Welcome back! Your learning space is being prepared.')
+    if (email.trim().toLowerCase() === 'guru@ji.com' && password === '12345') {
+      setLoginStatus('success')
+      setMessage('Login successful! Welcome to your Guruji learning space.')
+      return
+    }
+
+    setLoginStatus('error')
+    setMessage('Email or password is incorrect. Please try again.')
   }
 
   return (
@@ -44,12 +54,12 @@ function App() {
         <div className="login-top"><div className="mini-mark">गु</div><h2>Welcome back!</h2><p>Continue your learning journey</p></div>
         <form onSubmit={handleLogin}>
           <label htmlFor="email">Email or mobile number</label>
-          <div className="input-wrap"><span>✉</span><input id="email" type="text" placeholder="Enter your email or mobile" required /></div>
+          <div className="input-wrap"><span>✉</span><input id="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Enter your email" autoComplete="username" required /></div>
           <div className="label-row"><label htmlFor="password">Password</label><a href="#forgot">Forgot password?</a></div>
-          <div className="input-wrap"><span>◆</span><input id="password" type={showPassword ? 'text' : 'password'} placeholder="Enter your password" required /><button className="eye" type="button" onClick={() => setShowPassword(!showPassword)} aria-label="Show or hide password">{showPassword ? '◉' : '◎'}</button></div>
+          <div className="input-wrap"><span>◆</span><input id="password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" required /><button className="eye" type="button" onClick={() => setShowPassword(!showPassword)} aria-label="Show or hide password">{showPassword ? '◉' : '◎'}</button></div>
           <label className="remember"><input type="checkbox" /> <span>Remember me</span></label>
           <button className="login-button" type="submit">Login to Guruji <span>→</span></button>
-          {message && <p className="success" role="status">{message}</p>}
+          {message && <p className={`login-message ${loginStatus}`} role="status">{message}</p>}
         </form>
         <div className="divider"><span>or continue with</span></div>
         <button className="google-button" type="button"><b>G</b> Continue with Google</button>
