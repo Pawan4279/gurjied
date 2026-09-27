@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import './App.css'
 import { api } from './api'
-import AssessmentScreen from './components/AssessmentScreen'
+import AssessmentRoute from './components/AssessmentRoute'
 import DashboardScreen from './components/DashboardScreen'
 import LoginScreen from './components/LoginScreen'
-import type { Assessment, GurujiProfile } from './types'
+import type { GurujiProfile } from './types'
 
 const emptyProfile: GurujiProfile = { name: '', projects: [], activeProjectId: '' }
 
@@ -17,13 +18,49 @@ function normalizeProfile(value: { projects?: GurujiProfile['projects']; activeP
   return { name: value?.name || '', projects: [], activeProjectId: '' }
 }
 
+function AppRoutes() {
+  const navigate = useNavigate()
+  const [profile, setProfile] = useState(emptyProfile)
+  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'anonymous'>('checking')
+
+  useEffect(() => {
+    let active = true
+    api('session')
+      .then(data => { if (active) { setProfile(normalizeProfile(data.profile)); setAuthStatus('authenticated') } })
+      .catch(() => { if (active) setAuthStatus('anonymous') })
+    return () => { active = false }
+  }, [])
+
+  async function logout() {
+    try {
+      await api('logout', 'POST')
+      setProfile(emptyProfile)
+      setAuthStatus('anonymous')
+      navigate('/login', { replace: true })
+    } catch (problem) {
+      console.error((problem as Error).message)
+    }
+  }
+
+  if (authStatus === 'checking') return <main className="route-loading" role="status">Loading Guruji…</main>
+
+  return <Routes>
+    <Route path="/" element={<Navigate to={authStatus === 'authenticated' ? '/dashboard' : '/login'} replace />} />
+    <Route path="/login" element={authStatus === 'authenticated'
+      ? <Navigate to="/dashboard" replace />
+      : <LoginScreen onLogin={value => { setProfile(normalizeProfile(value as Parameters<typeof normalizeProfile>[0])); setAuthStatus('authenticated'); navigate('/dashboard', { replace: true }) }} />} />
+    <Route path="/dashboard" element={authStatus === 'authenticated'
+      ? <DashboardScreen profile={profile} onProfileChange={setProfile} onLogout={logout} onAssessment={assessment => navigate(`/assessment/${encodeURIComponent(assessment.id)}`)} />
+      : <Navigate to="/login" replace />} />
+    <Route path="/assessment/:assessmentId" element={authStatus === 'authenticated'
+      ? <AssessmentRoute onExit={() => navigate('/dashboard')} />
+      : <Navigate to="/login" replace />} />
+    <Route path="*" element={<Navigate to={authStatus === 'authenticated' ? '/dashboard' : '/login'} replace />} />
+  </Routes>
+}
+
 function App() {
-  const [profile, setProfile] = useState(emptyProfile), [isLoggedIn, setIsLoggedIn] = useState(false), [assessment, setAssessment] = useState<Assessment | null>(null)
-  useEffect(() => { api('session').then(data => { setProfile(normalizeProfile(data.profile)); setIsLoggedIn(true) }).catch(() => {}) }, [])
-  async function logout() { try { await api('logout', 'POST'); setIsLoggedIn(false); setProfile(emptyProfile); setAssessment(null) } catch (problem) { console.error((problem as Error).message) } }
-  if (assessment) return <AssessmentScreen assessment={assessment} onExit={() => setAssessment(null)} />
-  if (isLoggedIn) return <DashboardScreen profile={profile} onProfileChange={setProfile} onLogout={logout} onAssessment={setAssessment} />
-  return <LoginScreen onLogin={value => { setProfile(normalizeProfile(value as Parameters<typeof normalizeProfile>[0])); setIsLoggedIn(true) }} />
+  return <BrowserRouter><AppRoutes /></BrowserRouter>
 }
 
 export default App
