@@ -32,6 +32,7 @@ client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://127.0.0.1:27017'), serv
 db = client[os.getenv('MONGODB_DATABASE', 'guruji')]
 MODEL = os.getenv('OLLAMA_MODEL', 'qwen3:1.7b')
 OLLAMA = os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434')
+MAX_GENERATION_ATTEMPTS = 3
 @asynccontextmanager
 async def lifespan(app):
     client.admin.command('ping')
@@ -294,18 +295,16 @@ async def generate_assessment(request: Request):
     course, subject = profile['course'], profile['subject']
     syllabus = SYLLABUS_GUIDANCE.get(course, f'current {course} syllabus')
     math_subject = any(keyword in subject.casefold() for keyword in ('math', 'physics', 'chemistry', 'quantitative'))
-    mathml_requirement = ('For this mathematical subject, at least four questions must include a valid MathML expression in mathml. '
-        'Use elements such as math, mrow, mi, mn, mo, mfrac, msup, msub and msqrt. ' if math_subject else '')
     generation_prompt = f'''Create one original assessment for {course}, subject {subject}.
 Use this syllabus scope: {syllabus}. Model the difficulty, topic weight and wording on recurring patterns across roughly the last 20 years of this exam/class, without claiming a question is copied from a particular paper. Use current syllabus only.
 Return exactly 5 questions—never more and never fewer—in this order: 1 single_choice, 1 multi_select with exactly two correct choices, 1 fill_blank, 1 numeric, 1 true_false. The JSON schema requires exactly four option strings in every question record; provide four distinct strings even for non-choice questions, where they will be ignored. The single_choice must have exactly one correct_answers item. The multi_select must have exactly two correct_answers items. Each remaining question must have exactly one correct_answers item. correct_answers must contain option text exactly for choice questions, or the accepted blank/numeric/true-false value. Make all answers unambiguous and check calculations.
-{mathml_requirement}Use plain text for prose. Put every mathematical expression in valid presentation MathML 3 in the mathml field; use null when no expression is needed. Never use LaTeX, Markdown, HTML, scripts, links or external references. Keep explanations concise. Return JSON only.'''
+Use plain text for prose. Set mathml to null; the server adds safe presentation MathML where needed. Never use LaTeX, Markdown, HTML, scripts, links or external references. Keep explanations concise. Return JSON only.'''
     schema = AssessmentDraft.model_json_schema()
     questions = None
     last_error = None
     attempt = 0
     async with httpx.AsyncClient(timeout=240) as http:
-        while questions is None:
+        while questions is None and attempt < MAX_GENERATION_ATTEMPTS:
             attempt += 1
             if await request.is_disconnected():
                 raise HTTPException(499, 'Assessment generation was cancelled by the client.')
@@ -314,7 +313,7 @@ Return exactly 5 questions—never more and never fewer—in this order: 1 singl
                 result = await http.post(OLLAMA + '/api/chat', json={
                     'model': MODEL, 'stream': False, 'think': False, 'format': schema,
                     'messages': [{'role': 'system', 'content': 'You create accurate educational assessments and obey the supplied JSON schema.'}, {'role': 'user', 'content': generation_prompt + retry_note}],
-                    'options': {'temperature': 0.1, 'num_predict': 2600},
+                    'options': {'temperature': 0.1, 'num_predict': 1800},
                 })
                 result.raise_for_status()
                 draft = AssessmentDraft.model_validate_json(result.json()['message']['content'])
@@ -324,6 +323,9 @@ Return exactly 5 questions—never more and never fewer—in this order: 1 singl
             except (ValueError, KeyError) as error:
                 last_error = str(error)
                 logger.warning('Assessment generation attempt %s failed validation: %s', attempt, last_error)
+    if questions is None:
+        logger.error('Assessment generation failed after %s attempts: %s', MAX_GENERATION_ATTEMPTS, last_error)
+        raise HTTPException(503, 'The local AI could not create a valid assessment. Please try again.')
     document = {'user_id': row['user_id'], 'title': draft.title, 'duration_minutes': draft.duration_minutes,
         'instructions': draft.instructions, 'course': course, 'subject': subject, 'questions': questions,
         'basis_note': 'Original AI practice aligned to the current syllabus and recurring patterns from approximately 20 years of exams; not a verbatim past-paper archive.',
