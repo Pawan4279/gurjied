@@ -8,6 +8,11 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+backend/.venv/
+backend/*.db
+backend/__pycache__/
+.env
+.ollama/
 dist
 dist-ssr
 *.local

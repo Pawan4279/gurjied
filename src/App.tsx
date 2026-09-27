@@ -1,182 +1,63 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
 
-type GurujiProfile = {
-  name: string
-  course: string
-  learningMode: string
-  subject: string
+type GurujiProfile = { name: string; course: string; learningMode: string; subject: string }
+type QuestionType = 'single_choice' | 'multi_select' | 'fill_blank' | 'numeric' | 'true_false'
+type AssessmentQuestion = { id: string; type: QuestionType; prompt: string; mathml?: string | null; mathml_replaces_prompt?: boolean; options: string[] }
+type Assessment = { id: string; title: string; duration_minutes: number; instructions: string; course: string; subject: string; basis_note: string; questions: AssessmentQuestion[] }
+type Result = { score: number; total: number; breakdown: { question_id: string; correct: boolean; explanation: string }[] }
+
+const emptyProfile: GurujiProfile = { name: '', course: '', learningMode: 'Assessment', subject: '' }
+const courses = ['K–5 Foundation', 'Class 6–8', 'Class 9–10', 'Class 11–12', 'NEET', 'JEE Main & Advanced', 'SSC']
+const subjects = ['Mathematics', 'Science', 'Physics', 'Chemistry', 'Biology', 'English', 'History', 'Political Science', 'Current Affairs', 'General Knowledge', 'Reasoning']
+const modes = ['Assessment', 'Story Telling', 'Subject Tutorial', 'Mock Papers']
+
+async function api(path: string, method = 'GET', body?: unknown) {
+  const response = await fetch(`/api/${path}`, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+  const data = await response.json().catch(() => null)
+  if (!response.ok || !data) throw new Error(typeof data?.detail === 'string' ? data.detail : 'Backend unavailable. Start the Python server.')
+  return data
 }
 
-const subjectTags = ['K–12 Learning', 'NEET', 'JEE Advanced', 'SSC', 'Current Affairs']
-const emptyProfile: GurujiProfile = { name: '', course: '', learningMode: '', subject: '' }
+function CustomSelect({ label, value, options, placeholder, onChange }: { label: string; value: string; options: string[]; placeholder: string; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false)
+  return <div className="custom-field"><span className="field-label">{label}</span><button type="button" className={`select-trigger ${open ? 'open' : ''}`} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(!open)}><span>{value || placeholder}</span><i>⌄</i></button>{open && <div className="select-menu" role="listbox" aria-label={label}>{options.map(option => <button type="button" role="option" aria-selected={value === option} className={value === option ? 'selected' : ''} key={option} onClick={() => { onChange(option); setOpen(false) }}><span>{option}</span>{value === option && <b>✓</b>}</button>)}</div>}</div>
+}
+
+function MathML({ value }: { value?: string | null }) {
+  if (!value) return null
+  const document = new DOMParser().parseFromString(value, 'application/xml')
+  if (document.querySelector('parsererror')) return null
+  const allowed = new Set(['math', 'mrow', 'mi', 'mn', 'mo', 'mfrac', 'msup', 'msub', 'msqrt', 'mroot', 'mtext', 'mtable', 'mtr', 'mtd'])
+  for (const element of Array.from(document.querySelectorAll('*'))) {
+    if (!allowed.has(element.localName)) return null
+    for (const attribute of Array.from(element.attributes)) if (!['xmlns', 'display'].includes(attribute.name)) element.removeAttribute(attribute.name)
+  }
+  return <div className="math-expression" dangerouslySetInnerHTML={{ __html: document.documentElement.outerHTML }} />
+}
+
+function AssessmentScreen({ assessment, onExit }: { assessment: Assessment; onExit: () => void }) {
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>({})
+  const [result, setResult] = useState<Result | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const setSingle = (id: string, value: string) => setAnswers(previous => ({ ...previous, [id]: value }))
+  const toggleMulti = (id: string, value: string) => setAnswers(previous => { const current = Array.isArray(previous[id]) ? previous[id] as string[] : []; return { ...previous, [id]: current.includes(value) ? current.filter(item => item !== value) : [...current, value] } })
+  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setError(''); try { setResult(await api(`assessments/${assessment.id}/submit`, 'POST', { answers })) } catch (problem) { setError((problem as Error).message) } finally { setBusy(false) } }
+  return <main className="assessment-screen"><header className="assessment-topbar"><div className="brand"><span className="brand-mark">गु</span><span>Guruji<span className="brand-ai">AI</span></span></div><button type="button" onClick={onExit}>← Dashboard</button></header><div className="assessment-layout"><aside className="assessment-info"><span className="paper-kicker">PERSONALISED PRACTICE</span><h1>{assessment.title}</h1><div className="paper-meta"><span>{assessment.course}</span><span>{assessment.subject}</span><span>{assessment.duration_minutes} min</span></div><p>{assessment.instructions}</p><small>{assessment.basis_note}</small></aside><form className="question-paper" onSubmit={submit}>{assessment.questions.map((question, index) => { const feedback = result?.breakdown.find(item => item.question_id === question.id); return <section className={`question-card ${feedback ? (feedback.correct ? 'correct' : 'incorrect') : ''}`} key={question.id}><div className="question-number"><span>{String(index + 1).padStart(2, '0')}</span><small>{question.type.replace('_', ' ')}</small></div><div className="question-content">{!question.mathml_replaces_prompt && <h2>{question.prompt}</h2>}<MathML value={question.mathml} />{(question.type === 'single_choice' || question.type === 'true_false') && <div className="answer-options">{question.options.map(option => <label key={option}><input type="radio" name={question.id} value={option} checked={answers[question.id] === option} onChange={() => setSingle(question.id, option)} disabled={!!result} /><span>{option}</span></label>)}</div>}{question.type === 'multi_select' && <><p className="selection-hint">Select all correct answers</p><div className="answer-options checkbox-options">{question.options.map(option => <label key={option}><input type="checkbox" value={option} checked={Array.isArray(answers[question.id]) && (answers[question.id] as string[]).includes(option)} onChange={() => toggleMulti(question.id, option)} disabled={!!result} /><span>{option}</span></label>)}</div></>}{(question.type === 'fill_blank' || question.type === 'numeric') && <label className="blank-answer"><span>{question.type === 'numeric' ? 'Enter your answer' : 'Fill in the blank'}</span><input type={question.type === 'numeric' ? 'number' : 'text'} value={(answers[question.id] as string) || ''} onChange={event => setSingle(question.id, event.target.value)} disabled={!!result} placeholder="________________" /></label>}{feedback && <div className="answer-feedback"><b>{feedback.correct ? 'Correct' : 'Needs review'}</b><p>{feedback.explanation}</p></div>}</div></section>})}{error && <p className="login-message error" role="alert">{error}</p>}{!result ? <button className="submit-assessment" type="submit" disabled={busy}>{busy ? 'Checking answers…' : 'Submit assessment'}</button> : <div className="score-card"><span>Your score</span><strong>{result.score}<small>/{result.total}</small></strong><button type="button" onClick={onExit}>Back to dashboard</button></div>}</form></div></main>
+}
 
 function App() {
-  const [showPassword, setShowPassword] = useState(false)
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [message, setMessage] = useState('')
-  const [loginStatus, setLoginStatus] = useState<'idle' | 'success' | 'error'>('idle')
-  const [isLoggedIn, setIsLoggedIn] = useState(() => sessionStorage.getItem('guruji_logged_in') === 'true')
-  const [isModalOpen, setIsModalOpen] = useState(false)
-  const [profile, setProfile] = useState<GurujiProfile>(() => {
-    const saved = sessionStorage.getItem('guruji_profile')
-    return saved ? JSON.parse(saved) as GurujiProfile : emptyProfile
-  })
-  const [draft, setDraft] = useState<GurujiProfile>(profile)
-
-  function handleLogin(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (email.trim().toLowerCase() === 'guru@ji.com' && password === '12345') {
-      sessionStorage.setItem('guruji_logged_in', 'true')
-      setLoginStatus('success')
-      setMessage('')
-      setIsLoggedIn(true)
-      return
-    }
-    setLoginStatus('error')
-    setMessage('Email or password is incorrect. Please try again.')
-  }
-
-  function openCreator() {
-    setDraft(profile.name ? profile : emptyProfile)
-    setIsModalOpen(true)
-  }
-
-  function saveGuruji(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    sessionStorage.setItem('guruji_profile', JSON.stringify(draft))
-    setProfile(draft)
-    setIsModalOpen(false)
-  }
-
-  function logout() {
-    sessionStorage.removeItem('guruji_logged_in')
-    setIsLoggedIn(false)
-    setPassword('')
-  }
-
-  if (isLoggedIn) {
-    return (
-      <main className="dashboard-shell">
-        <div className="dash-orb dash-orb-one" /><div className="dash-orb dash-orb-two" />
-        <header className="dash-header">
-          <div className="brand"><span className="brand-mark">गु</span><span>Guruji<span className="brand-ai">AI</span></span></div>
-          <div className="dash-user">
-            <span className="online-dot" /> <span>{profile.name || 'Learner'}</span>
-            <button type="button" onClick={logout}>Logout</button>
-          </div>
-        </header>
-
-        <section className="dash-hero">
-          <div className="dash-copy">
-            <span className="dash-kicker">✦ PERSONAL LEARNING SPACE</span>
-            <h1>{profile.name ? `Welcome back, ${profile.name}!` : 'Build a Guruji who understands you.'}</h1>
-            <p>Apni learning goals share karein aur ek personalized AI teacher banayein jo aapki pace, course aur favourite learning style ke hisaab se guide kare.</p>
-            <button className="create-guruji" type="button" onClick={openCreator}>
-              <span className="create-icon">✦</span>
-              <span><b>{profile.name ? 'Update Your AI Guruji' : 'Create Your AI Guruji'}</b><small>Personalise your learning journey</small></span>
-              <strong>→</strong>
-            </button>
-          </div>
-
-          <div className="guru-visual" aria-hidden="true">
-            <div className="visual-ring ring-one" /><div className="visual-ring ring-two" />
-            <div className="guru-core"><span>गु</span><small>AI</small></div>
-            <span className="float-pill pill-one">Assessment</span>
-            <span className="float-pill pill-two">Story Learning</span>
-            <span className="float-pill pill-three">Mock Tests</span>
-          </div>
-        </section>
-
-        {profile.name ? (
-          <section className="profile-summary">
-            <div className="summary-head"><span>✓</span><div><small>YOUR AI GURUJI IS READY</small><h2>Namaste, {profile.name}!</h2></div></div>
-            <div className="summary-grid">
-              <article><small>COURSE / CLASS</small><b>{profile.course}</b></article>
-              <article><small>LEARNING MODE</small><b>{profile.learningMode}</b></article>
-              <article><small>SUBJECT</small><b>{profile.subject}</b></article>
-            </div>
-          </section>
-        ) : (
-          <section className="start-strip"><span>01</span><div><b>Tell us about yourself</b><small>It takes less than a minute</small></div><i>→</i><span>02</span><div><b>Meet your AI Guruji</b><small>Start a personalized lesson</small></div></section>
-        )}
-
-        {isModalOpen && (
-          <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setIsModalOpen(false)}>
-            <section className="creator-modal" role="dialog" aria-modal="true" aria-labelledby="creator-title">
-              <button className="modal-close" type="button" onClick={() => setIsModalOpen(false)} aria-label="Close">×</button>
-              <div className="modal-badge">गु</div>
-              <span className="modal-step">PERSONALISE YOUR TEACHER</span>
-              <h2 id="creator-title">Create your AI Guruji</h2>
-              <p>Bas kuch details batayein, taaki Guruji aapke liye perfect learning plan bana sake.</p>
-              <form className="creator-form" onSubmit={saveGuruji}>
-                <label>Your name
-                  <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="e.g. Aarav Sharma" autoFocus required />
-                </label>
-                <label>Class or exam course
-                  <select value={draft.course} onChange={(event) => setDraft({ ...draft, course: event.target.value })} required>
-                    <option value="">Select your class or exam</option><option>K–5 Foundation</option><option>Class 6–8</option><option>Class 9–10</option><option>Class 11–12</option><option>NEET</option><option>JEE Main & Advanced</option><option>SSC</option>
-                  </select>
-                </label>
-                <fieldset><legend>What would you like to do?</legend>
-                  <div className="choice-grid">
-                    {['Assessment', 'Story Telling', 'Subject Tutorial', 'Mock Papers'].map((mode) => (
-                      <label className={draft.learningMode === mode ? 'selected' : ''} key={mode}><input type="radio" name="mode" value={mode} checked={draft.learningMode === mode} onChange={(event) => setDraft({ ...draft, learningMode: event.target.value })} required /><span>{mode === 'Assessment' ? '✓' : mode === 'Story Telling' ? '◉' : mode === 'Subject Tutorial' ? '✦' : '▤'}</span>{mode}</label>
-                    ))}
-                  </div>
-                </fieldset>
-                <label>Choose your subject
-                  <select value={draft.subject} onChange={(event) => setDraft({ ...draft, subject: event.target.value })} required>
-                    <option value="">Select a subject</option><option>Mathematics</option><option>Science</option><option>English</option><option>History</option><option>Political Science</option><option>Current Affairs</option><option>General Knowledge</option>
-                  </select>
-                </label>
-                <button className="save-guruji" type="submit">Create My Guruji <span>→</span></button>
-              </form>
-            </section>
-          </div>
-        )}
-      </main>
-    )
-  }
-
-  return (
-    <main className="page-shell">
-      <div className="orb orb-one" /><div className="orb orb-two" />
-      <nav className="brand" aria-label="Guruji AI home"><span className="brand-mark">गु</span><span>Guruji<span className="brand-ai">AI</span></span></nav>
-      <section className="hero-panel">
-        <div className="eyebrow"><span>✦</span> Your personal AI teacher</div>
-        <h1>Har sawaal ka jawab.<br /><em>Har sapne ko udaan.</em></h1>
-        <p className="hero-copy">Aapka intelligent virtual teacher jo har concept ko aapki pace par samjhaye—school se competitive exams tak, anytime, anywhere.</p>
-        <div className="subject-row">{subjectTags.map((subject) => <span key={subject}>{subject}</span>)}</div>
-        <div className="feature-grid">
-          <article><span className="feature-icon purple">✦</span><div><strong>Smart Assessments</strong><small>Personalised tests & instant feedback</small></div></article>
-          <article><span className="feature-icon amber">▤</span><div><strong>Mock Papers</strong><small>Exam-ready practice & analysis</small></div></article>
-          <article><span className="feature-icon blue">◉</span><div><strong>Story Learning</strong><small>Concepts that stay with you</small></div></article>
-          <article><span className="feature-icon pink">⌁</span><div><strong>All Subjects</strong><small>Maths, English, GK, History & more</small></div></article>
-        </div>
-        <div className="proof"><div className="avatars"><span>AR</span><span>SK</span><span>MP</span></div><div><b>10,000+ learners</b><small>already learning smarter</small></div><div className="rating">★★★★★ <small>4.9</small></div></div>
-      </section>
-      <aside className="login-card">
-        <div className="login-top"><div className="mini-mark">गु</div><h2>Welcome back!</h2><p>Continue your learning journey</p></div>
-        <form onSubmit={handleLogin}>
-          <label htmlFor="email">Email address</label>
-          <div className="input-wrap"><span>✉</span><input id="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Enter your email" autoComplete="username" required /></div>
-          <div className="label-row"><label htmlFor="password">Password</label><a href="#forgot">Forgot password?</a></div>
-          <div className="input-wrap"><span>◆</span><input id="password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" required /><button className="eye" type="button" onClick={() => setShowPassword(!showPassword)} aria-label="Show or hide password">{showPassword ? '◉' : '◎'}</button></div>
-          <label className="remember"><input type="checkbox" /> <span>Remember me</span></label>
-          <button className="login-button" type="submit">Login to Guruji <span>→</span></button>
-          {message && <p className={`login-message ${loginStatus}`} role="status">{message}</p>}
-        </form>
-        <div className="divider"><span>or continue with</span></div>
-        <button className="google-button" type="button"><b>G</b> Continue with Google</button>
-        <p className="signup">New to Guruji? <a href="#signup">Create an account</a></p>
-        <p className="terms">By continuing, you agree to our <a href="#terms">Terms</a> & <a href="#privacy">Privacy Policy</a></p>
-      </aside>
-      <footer>Built for curious minds <span>•</span> Learn without limits</footer>
-    </main>
-  )
+  const [showPassword, setShowPassword] = useState(false), [registering, setRegistering] = useState(false), [accountName, setAccountName] = useState(''), [confirmPassword, setConfirmPassword] = useState(''), [authBusy, setAuthBusy] = useState(false), [email, setEmail] = useState(''), [password, setPassword] = useState(''), [message, setMessage] = useState(''), [isLoggedIn, setIsLoggedIn] = useState(false), [isModalOpen, setIsModalOpen] = useState(false), [profile, setProfile] = useState<GurujiProfile>(emptyProfile), [draft, setDraft] = useState<GurujiProfile>(emptyProfile), [assessment, setAssessment] = useState<Assessment | null>(null), [busy, setBusy] = useState(false), [apiError, setApiError] = useState('')
+  useEffect(() => { api('session').then(data => { setProfile(data.profile || emptyProfile); setIsLoggedIn(true) }).catch(() => {}) }, [])
+  async function handleAuth(event: FormEvent) { event.preventDefault(); if (registering && password !== confirmPassword) { setMessage('Passwords do not match.'); return } setAuthBusy(true); setMessage(''); try { const data = await api(registering ? 'register' : 'login', 'POST', { email, password, ...(registering ? { name: accountName } : {}) }); setProfile(data.profile || emptyProfile); setPassword(''); setConfirmPassword(''); setIsLoggedIn(true) } catch (problem) { setMessage((problem as Error).message) } finally { setAuthBusy(false) } }
+  async function saveGuruji(event: FormEvent) { event.preventDefault(); setApiError(''); try { await api('profile', 'PUT', draft); setProfile(draft); setIsModalOpen(false) } catch (problem) { setApiError((problem as Error).message) } }
+  async function generateAssessment() { setBusy(true); setApiError(''); try { setAssessment(await api('assessments/generate', 'POST')) } catch (problem) { setApiError((problem as Error).message) } finally { setBusy(false) } }
+  async function logout() { try { await api('logout', 'POST'); setIsLoggedIn(false); setProfile(emptyProfile); setAssessment(null) } catch (problem) { setApiError((problem as Error).message) } }
+  if (assessment) return <AssessmentScreen assessment={assessment} onExit={() => setAssessment(null)} />
+  if (isLoggedIn) return <main className="dashboard-shell"><div className="dash-orb dash-orb-one" /><div className="dash-orb dash-orb-two" /><header className="dash-header"><div className="brand"><span className="brand-mark">गु</span><span>Guruji<span className="brand-ai">AI</span></span></div><div className="dash-user"><span className="online-dot" /><span>{profile.name || 'Learner'}</span><button type="button" onClick={logout}>Logout</button></div></header><section className="workspace-hero"><div><span className="dash-kicker">✦ PERSONAL LEARNING SPACE</span><h1>{profile.name ? `Namaste, ${profile.name}` : 'Create your learning profile'}</h1><p>Select your exam, subject and learning style. Guruji prepares an original practice assessment aligned to the current syllabus and recurring patterns from approximately 20 years of exams.</p></div><button className="edit-profile" type="button" onClick={() => { setDraft(profile.name ? profile : emptyProfile); setIsModalOpen(true) }}>{profile.name ? 'Edit preferences' : 'Set up Guruji'}</button></section>{profile.name ? <section className="profile-summary workspace-card"><div className="summary-head"><span>✓</span><div><small>YOUR LEARNING PLAN</small><h2>{profile.course} · {profile.subject}</h2></div></div><div className="summary-grid"><article><small>EXAM / CLASS</small><b>{profile.course}</b></article><article><small>LEARNING STYLE</small><b>{profile.learningMode}</b></article><article><small>SUBJECT</small><b>{profile.subject}</b></article></div><button className="generate-paper" type="button" onClick={generateAssessment} disabled={busy}><span>▤</span><div><b>{busy ? 'Building your assessment…' : 'Generate assessment'}</b><small>No prompt needed — course and subject are applied automatically</small></div><i>→</i></button></section> : <section className="start-strip"><span>01</span><div><b>Set your exam and subject</b><small>Guruji will use them automatically</small></div><i>→</i><span>02</span><div><b>Take your assessment</b><small>Answer, submit and review your score</small></div></section>}{apiError && !isModalOpen && <p className="login-message error dashboard-error" role="alert">{apiError}</p>}{isModalOpen && <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && setIsModalOpen(false)}><section className="creator-modal" role="dialog" aria-modal="true" aria-labelledby="creator-title"><button className="modal-close" type="button" onClick={() => setIsModalOpen(false)}>×</button><div className="modal-badge">गु</div><span className="modal-step">PERSONALISE YOUR TEACHER</span><h2 id="creator-title">Choose your learning plan</h2><p>Your selections power the backend assessment prompt automatically.</p><form className="creator-form" onSubmit={saveGuruji}>{apiError && <p className="login-message error">{apiError}</p>}<label>Your name<input value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} required maxLength={100} /></label><CustomSelect label="Class or exam" value={draft.course} options={courses} placeholder="Choose your target" onChange={course => setDraft({ ...draft, course })} /><CustomSelect label="Subject" value={draft.subject} options={subjects} placeholder="Choose a subject" onChange={subject => setDraft({ ...draft, subject })} /><fieldset><legend>Preferred learning style</legend><div className="mode-radios">{modes.map(mode => <label className={draft.learningMode === mode ? 'selected' : ''} key={mode}><input type="radio" name="learning-mode" checked={draft.learningMode === mode} onChange={() => setDraft({ ...draft, learningMode: mode })} /><span /><b>{mode}</b></label>)}</div></fieldset><button className="save-guruji" type="submit" disabled={!draft.course || !draft.subject}>Save learning plan <span>→</span></button></form></section></div>}</main>
+  return <main className="page-shell"><div className="orb orb-one" /><div className="orb orb-two" /><nav className="brand"><span className="brand-mark">गु</span><span>Guruji<span className="brand-ai">AI</span></span></nav><section className="hero-panel"><div className="eyebrow"><span>✦</span>Your personal AI teacher</div><h1>Har sawaal ka jawab.<br /><em>Har sapne ko udaan.</em></h1><p className="hero-copy">School se competitive exams tak personalised assessments, clear explanations aur focused practice.</p><div className="subject-row">{['K–12', 'NEET', 'JEE Advanced', 'SSC', 'Current Affairs'].map(item => <span key={item}>{item}</span>)}</div></section><aside className="login-card"><div className="login-top"><div className="mini-mark">गु</div><h2>{registering ? 'Create your account' : 'Welcome back!'}</h2><p>{registering ? 'Start your learning journey' : 'Continue your learning journey'}</p></div><form onSubmit={handleAuth}>{registering && <><label htmlFor="account-name">Your name</label><div className="input-wrap"><input id="account-name" value={accountName} onChange={event => setAccountName(event.target.value)} required /></div></>}<label htmlFor="email">Email address</label><div className="input-wrap"><span>✉</span><input id="email" type="email" value={email} onChange={event => setEmail(event.target.value)} required /></div><div className="label-row"><label htmlFor="password">{registering ? 'Password (minimum 8 characters)' : 'Password'}</label></div><div className="input-wrap"><span>◆</span><input id="password" type={showPassword ? 'text' : 'password'} minLength={registering ? 8 : 1} value={password} onChange={event => setPassword(event.target.value)} required /><button className="eye" type="button" onClick={() => setShowPassword(!showPassword)}>{showPassword ? '◉' : '◎'}</button></div>{registering && <><label htmlFor="confirm-password">Confirm password</label><div className="input-wrap"><input id="confirm-password" type="password" minLength={8} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} required /></div></>}<button className="login-button auth-submit" disabled={authBusy}>{authBusy ? 'Please wait…' : registering ? 'Create account' : 'Login to Guruji'} <span>→</span></button>{message && <p className="login-message error">{message}</p>}</form><p className="signup">{registering ? 'Already have an account? ' : 'New to Guruji? '}<button className="auth-switch" type="button" onClick={() => { setRegistering(!registering); setMessage('') }}>{registering ? 'Login' : 'Create an account'}</button></p></aside><footer>Built for curious minds <span>•</span> Learn without limits</footer></main>
 }
 
 export default App
