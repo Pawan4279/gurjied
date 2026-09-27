@@ -59,11 +59,21 @@ class Register(Login):
     name: str = Field(min_length=1, max_length=100, pattern=r'\S')
     password: str = Field(min_length=8, max_length=256)
 
-class Profile(BaseModel):
+class Project(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=100, pattern=r'\S')
-    course: str = Field(min_length=1, max_length=100)
+    course: Literal['SSC']
     learningMode: str = Field(pattern='^(Assessment|Story Telling|Subject Tutorial|Mock Papers)$')
     subject: str = Field(min_length=1, max_length=100)
+
+class Profile(BaseModel):
+    name: str = Field(min_length=1, max_length=100, pattern=r'\S')
+    projects: list[Project] | None = Field(default=None, max_length=20)
+    activeProjectId: str | None = Field(default=None, max_length=80)
+    # Accepted temporarily so existing accounts can be migrated on their next save.
+    course: str | None = Field(default=None, max_length=100)
+    learningMode: str | None = Field(default=None, pattern='^(Assessment|Story Telling|Subject Tutorial|Mock Papers)$')
+    subject: str | None = Field(default=None, max_length=100)
 
 class Question(BaseModel):
     message: str = Field(min_length=1, max_length=4000, pattern=r'\S')
@@ -264,8 +274,21 @@ def current(request: Request):
 @app.put('/api/profile')
 def profile(body: Profile, request: Request):
     row = session(request)
-    db.users.update_one({'_id': row['user_id']}, {'$set': {'profile': body.model_dump()}})
-    return body.model_dump()
+    value = body.model_dump(exclude_none=True)
+    if value.get('projects') is None:
+        if value.get('course') != 'SSC' or not value.get('subject') or not value.get('learningMode'):
+            raise HTTPException(422, 'Only SSC projects are currently available.')
+        project = {'id': secrets.token_urlsafe(12), 'name': f"{value['course']} · {value['subject']}",
+                   'course': value['course'], 'learningMode': value['learningMode'], 'subject': value['subject']}
+        value = {'name': value['name'], 'projects': [project], 'activeProjectId': project['id']}
+    else:
+        value.pop('course', None)
+        value.pop('learningMode', None)
+        value.pop('subject', None)
+        if value['projects'] and value.get('activeProjectId') not in {project['id'] for project in value['projects']}:
+            raise HTTPException(422, 'The active project does not exist.')
+    db.users.update_one({'_id': row['user_id']}, {'$set': {'profile': value}})
+    return value
 
 @app.post('/api/logout')
 def logout(request: Request, response: Response):
@@ -292,7 +315,12 @@ async def generate_assessment(request: Request):
     profile = row['profile']
     if not profile:
         raise HTTPException(409, 'Create your Guruji profile first.')
-    course, subject = profile['course'], profile['subject']
+    project = next((item for item in profile.get('projects', []) if item['id'] == profile.get('activeProjectId')), None)
+    if not project and profile.get('course') and profile.get('subject'):
+        project = profile
+    if not project:
+        raise HTTPException(409, 'Select a learning project first.')
+    course, subject = project['course'], project['subject']
     syllabus = SYLLABUS_GUIDANCE.get(course, f'current {course} syllabus')
     math_subject = any(keyword in subject.casefold() for keyword in ('math', 'physics', 'chemistry', 'quantitative'))
     generation_prompt = f'''Create one original assessment for {course}, subject {subject}.
